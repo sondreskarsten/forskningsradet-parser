@@ -156,7 +156,7 @@ class ForskningsradetCDC:
                 pool[orgnr] = {"first_seen": run_date, "last_seen": run_date, "n_entries": 1}
 
         if run_mode != "bootstrap":
-            for key, old_h in old_snaps.items():
+            for key, old_entry in old_snaps.items():
                 if key not in new_snaps:
                     changelog_rows.append({
                         "orgnr": key[2], "document_id": f"nfr-{key[0]}-{key[1]}-{key[2]}",
