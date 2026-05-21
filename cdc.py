@@ -10,6 +10,17 @@ from datetime import datetime, timezone
 import pyarrow as pa
 import pyarrow.parquet as pq
 from google.cloud import storage as gcs_lib
+import re
+
+def parse_date_to_iso(date_str):
+    if not date_str:
+        return None
+    m = re.match(r"(\d{2})\.(\d{2})\.(\d{4})", str(date_str))
+    if m:
+        return f"{m.group(3)}-{m.group(2)}-{m.group(1)}"
+    if re.match(r"\d{4}-\d{2}-\d{2}", str(date_str)):
+        return str(date_str)[:10]
+    return str(date_str)
 
 CHANGELOG_SCHEMA = pa.schema([
     ("orgnr", pa.string()), ("document_id", pa.string()), ("data_source", pa.string()),
@@ -103,7 +114,7 @@ class ForskningsradetCDC:
                 "event_subtype": f"nfr_{ds}",
                 "summary": summary,
                 "changed_fields": None if event_type == "new" else json.dumps(["content_hash"]),
-                "valid_time": row.get("contract_start") or row.get("project_start") or run_date,
+                "valid_time": parse_date_to_iso(row.get("contract_start") or row.get("project_start")) or run_date,
                 "detected_time": detected_time,
                 "details_json": json.dumps(details, ensure_ascii=False),
                 "source_run_mode": run_mode,
@@ -117,13 +128,21 @@ class ForskningsradetCDC:
             else:
                 pool[orgnr] = {"first_seen": run_date, "last_seen": run_date, "n_entries": 1}
 
+        if run_mode != "bootstrap":
+            for key, old_h in old_snaps.items():
+                if key not in new_snaps:
+                    changelog_rows.append({
+                        "orgnr": key[2], "document_id": f"nfr-{key[0]}-{key[1]}-{key[2]}",
+                        "data_source": "forskningsradet", "event_type": "disappeared",
+                        "event_subtype": f"nfr_{key[0]}_ended", "summary": f"Disappeared from {key[0]}: project {key[1]}",
+                        "changed_fields": None, "valid_time": run_date, "detected_time": detected_time,
+                        "details_json": None, "source_run_mode": run_mode, "run_id": run_id,
+                    })
+
         if changelog_rows:
             self._write_parquet(pa.Table.from_pylist(changelog_rows, schema=CHANGELOG_SCHEMA),
                                self._gcs_path("cdc", "changelog", f"{run_date}.parquet"))
         snap_rows = list(new_snaps.values())
-        for key, old_h in old_snaps.items():
-            if key not in new_snaps:
-                snap_rows.append({"dataset": key[0], "project_nr": key[1], "orgnr": key[2], "content_hash": old_h})
         if snap_rows:
             self._write_parquet(pa.Table.from_pylist(snap_rows, schema=SNAPSHOT_SCHEMA),
                                self._gcs_path("cdc", "snapshots.parquet"))
