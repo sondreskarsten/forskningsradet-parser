@@ -29,6 +29,9 @@ CHANGELOG_SCHEMA = pa.schema([
     ("details_json", pa.string()), ("source_run_mode", pa.string()), ("run_id", pa.string()),
 ])
 
+TRACKED_FIELDS_EU = ["org_role", "contract_status", "amount_eur"]
+TRACKED_FIELDS_SOK = ["project_phase", "granted_amount"]
+
 SNAPSHOT_SCHEMA = pa.schema([
     ("dataset", pa.string()), ("project_nr", pa.string()), ("orgnr", pa.string()), ("content_hash", pa.string()),
 ])
@@ -77,7 +80,14 @@ class ForskningsradetCDC:
         if t is None:
             return {}
         d = t.to_pydict()
-        return {(d["dataset"][i], d["project_nr"][i], d["orgnr"][i]): d["content_hash"][i] for i in range(t.num_rows)}
+        result = {}
+        for i in range(t.num_rows):
+            key = (d["dataset"][i], d["project_nr"][i], d["orgnr"][i])
+            result[key] = {"content_hash": d["content_hash"][i], "dataset": d["dataset"][i]}
+            for f in sorted(set(TRACKED_FIELDS_EU + TRACKED_FIELDS_SOK)):
+                if f in d:
+                    result[key][f] = d[f][i]
+        return result
 
     def _load_pool(self):
         t = self._read_parquet(self._gcs_path("cdc", "pool.parquet"))
@@ -101,14 +111,19 @@ class ForskningsradetCDC:
             ds = row["dataset"]
             key = (ds, row["project_nr"], row["orgnr"])
             h = row["content_hash"]
-            old_h = old_snaps.get(key)
-            new_snaps[key] = {"dataset": ds, "project_nr": row["project_nr"], "orgnr": row["orgnr"], "content_hash": h}
+            snap = {"dataset": ds, "project_nr": row["project_nr"], "orgnr": row["orgnr"], "content_hash": h}
+            for f in sorted(set(TRACKED_FIELDS_EU + TRACKED_FIELDS_SOK)):
+                snap[f] = str(row.get(f) or "")
+            new_snaps[key] = snap
 
-            if run_mode == "bootstrap" or old_h is None:
+            old_entry = old_snaps.get(key)
+            tracked = TRACKED_FIELDS_EU if ds == "bevilgningereu" else TRACKED_FIELDS_SOK
+            if run_mode == "bootstrap" or old_entry is None:
                 event_type = "new"
                 new_count += 1
-            elif old_h != h:
+            elif old_entry["content_hash"] != h:
                 event_type = "modified"
+                diffs = [f for f in tracked if str(row.get(f) or "") != str(old_entry.get(f) or "")]
                 mod_count += 1
             else:
                 continue
@@ -125,7 +140,7 @@ class ForskningsradetCDC:
                 "event_type": event_type,
                 "event_subtype": f"nfr_{ds}",
                 "summary": summary,
-                "changed_fields": None if event_type == "new" else json.dumps(["content_hash"]),
+                "changed_fields": None if event_type == "new" else json.dumps(diffs if diffs else ["content_hash"]),
                 "valid_time": parse_date_to_iso(row.get("contract_start") or row.get("project_start")) or run_date,
                 "detected_time": detected_time,
                 "details_json": json.dumps(details, ensure_ascii=False),
