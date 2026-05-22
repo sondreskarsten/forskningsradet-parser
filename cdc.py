@@ -141,6 +141,7 @@ class ForskningsradetCDC:
                 "event_subtype": f"nfr_{ds}",
                 "summary": summary,
                 "changed_fields": None if event_type == "new" else json.dumps(diffs if diffs else ["content_hash"]),
+                # REVIEW: valid_time = contract_start or project_start (source field). State register diffed like enheter — should be snapshot date. See valid_time_audit.md
                 "valid_time": parse_date_to_iso(row.get("contract_start") or row.get("project_start")) or run_date,
                 "detected_time": detected_time,
                 "details_json": json.dumps(details, ensure_ascii=False),
